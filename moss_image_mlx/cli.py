@@ -66,6 +66,14 @@ def quant_spec(text: str | None):
     return {"bits": int(bits), "group_size": int(group or 64)}
 
 
+def _lora_spec(text: str) -> tuple[str, float]:
+    """'path.safetensors' or 'path.safetensors:0.7'."""
+    path, sep, scale = text.rpartition(":")
+    if sep and scale.replace(".", "", 1).isdigit():
+        return path, float(scale)
+    return text, 1.0
+
+
 def _from_parameters(path) -> dict:
     params = json.load(open(path))["parameters"]
     return {"prompt": params["prompt"], "negative_prompt": params.get("negative_prompt", ""),
@@ -95,6 +103,8 @@ def main(argv=None):
     p.add_argument("--dit-dtype", choices=("bfloat16", "float32"), help="Transformer precision (default: as stored)")
     p.add_argument("--dit-quant", help="Quantize the transformer at load: 8, 6, 4g32, nvfp4, mxfp8 or JSON")
     p.add_argument("--te-quant", help="Quantize the text encoder at load (same forms)")
+    p.add_argument("--lora", action="append", default=[], metavar="PATH[:SCALE]",
+                   help="LoRA safetensors (kohya or diffusers keys), applied unmerged; repeatable, e.g. --lora style.safetensors:0.8")
     p.add_argument("--precise", action="store_true", help="fp32 residual stream and elementwise ops (bf16 matmuls)")
     p.add_argument("--no-cache", action="store_true", help="Do not read or write the prompt-embedding cache")
     p.add_argument("--keep-resident", action="store_true", help="Do not free components between stages")
@@ -137,7 +147,8 @@ def main(argv=None):
     dtype = getattr(mx, args.dit_dtype) if args.dit_dtype else None
     pipe = MOSSImagePipeline(args.model, args.transformer, low_memory=not args.keep_resident, dit_dtype=dtype,
                              dit_quant=quant_spec(args.dit_quant), te_quant=quant_spec(args.te_quant),
-                             cache_dir=False if args.no_cache else None, precise=args.precise)
+                             cache_dir=False if args.no_cache else None, precise=args.precise,
+                             loras=[_lora_spec(x) for x in args.lora])
     start = time.perf_counter()
 
     def progress(i, n):
@@ -147,7 +158,8 @@ def main(argv=None):
     for req, image in pipe.generate_many([r for r, _ in jobs], on_step=progress):
         print(file=sys.stderr)
         save(image, req, paths[id(req)], {"timings": dict(pipe.timings), "precise": args.precise,
-                                          "dit_quant": args.dit_quant or "bf16", "te_quant": args.te_quant or "bf16"})
+                                          "dit_quant": args.dit_quant or "bf16", "te_quant": args.te_quant or "bf16",
+                                          "loras": args.lora})
         print(paths[id(req)])
     print(json.dumps(pipe.timings), file=sys.stderr)
 
